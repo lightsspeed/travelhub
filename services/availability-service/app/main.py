@@ -1,26 +1,60 @@
+from contextlib import asynccontextmanager
 import os
 from typing import List, Optional
 from fastapi import FastAPI, HTTPException, Response, status
 from pydantic import BaseModel
+import psycopg
 
-app = FastAPI(title="TravelHub Availability Service")
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql://travelhub_availability:availabilitypass@localhost:5432/availability_db",
+)
+
+
+def get_db_connection():
+    return psycopg.connect(DATABASE_URL, connect_timeout=2)
+
+
+def init_db():
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS availability (
+                        room_id INTEGER PRIMARY KEY,
+                        available BOOLEAN NOT NULL
+                    );
+                """)
+                cur.execute("SELECT COUNT(*) FROM availability;")
+                count = cur.fetchone()[0]
+                if count == 0:
+                    seed_rooms = [(i, True) for i in range(1, 7)]
+                    for room in seed_rooms:
+                        cur.execute(
+                            "INSERT INTO availability (room_id, available) VALUES (%s, %s);",
+                            room,
+                        )
+            conn.commit()
+    except Exception as e:
+        print(f"Availability service DB init warning: {e}")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
+
+
+app = FastAPI(title="TravelHub Availability Service", lifespan=lifespan)
 
 
 class AvailabilityRecord(BaseModel):
     room_id: int
-    hotel_id: int
     available: bool = True
 
 
-# In-memory availability store
-availability_db: List[dict] = [
-    {"room_id": 1, "hotel_id": 1, "available": True},
-    {"room_id": 2, "hotel_id": 1, "available": True},
-    {"room_id": 3, "hotel_id": 2, "available": False},
-    {"room_id": 4, "hotel_id": 2, "available": True},
-    {"room_id": 5, "hotel_id": 3, "available": True},
-    {"room_id": 6, "hotel_id": 4, "available": False},
-]
+class ReserveRequest(BaseModel):
+    booking_id: Optional[int] = None
 
 
 @app.get("/health")
@@ -30,7 +64,17 @@ def get_health():
 
 @app.get("/ready")
 def get_ready():
-    return {"status": "ready", "service": "availability-service"}
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1;")
+        return {"status": "ready", "service": "availability-service"}
+    except Exception as e:
+        print(f"Availability service database ready check failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database unavailable",
+        )
 
 
 @app.get("/metrics")
@@ -47,20 +91,51 @@ def get_metrics():
 def get_availability(
     hotel_id: Optional[int] = None, room_id: Optional[int] = None
 ):
-    results = availability_db
-    if hotel_id is not None:
-        results = [a for a in results if a["hotel_id"] == hotel_id]
-    if room_id is not None:
-        results = [a for a in results if a["room_id"] == room_id]
-    return results
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                if room_id is not None:
+                    cur.execute(
+                        "SELECT room_id, available FROM availability WHERE room_id = %s;",
+                        (room_id,),
+                    )
+                else:
+                    cur.execute(
+                        "SELECT room_id, available FROM availability ORDER BY room_id;"
+                    )
+                rows = cur.fetchall()
+                return [{"room_id": r[0], "available": r[1]} for r in rows]
+    except Exception as e:
+        print(f"Availability service database error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database unavailable",
+        )
 
 
 @app.get("/availability/{room_id}", response_model=AvailabilityRecord)
 def get_availability_by_room(room_id: int):
-    for rec in availability_db:
-        if rec["room_id"] == room_id:
-            return rec
-    raise HTTPException(status_code=404, detail="Availability record not found")
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT room_id, available FROM availability WHERE room_id = %s;",
+                    (room_id,),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    raise HTTPException(
+                        status_code=404, detail="Availability record not found"
+                    )
+                return {"room_id": row[0], "available": row[1]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Availability service database error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database unavailable",
+        )
 
 
 @app.post(
@@ -69,23 +144,75 @@ def get_availability_by_room(room_id: int):
     status_code=status.HTTP_200_OK,
 )
 def create_or_update_availability(payload: AvailabilityRecord):
-    # Check if record already exists for room_id
-    for rec in availability_db:
-        if rec["room_id"] == payload.room_id:
-            rec["hotel_id"] = payload.hotel_id
-            rec["available"] = payload.available
-            return rec
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO availability (room_id, available)
+                    VALUES (%s, %s)
+                    ON CONFLICT (room_id) DO UPDATE SET available = EXCLUDED.available;
+                    """,
+                    (payload.room_id, payload.available),
+                )
+            conn.commit()
+            return {"room_id": payload.room_id, "available": payload.available}
+    except Exception as e:
+        print(f"Availability service database error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database unavailable",
+        )
 
-    new_rec = {
-        "room_id": payload.room_id,
-        "hotel_id": payload.hotel_id,
-        "available": payload.available,
-    }
-    availability_db.append(new_rec)
-    return new_rec
+
+@app.post("/availability/{room_id}/reserve")
+def reserve_room(room_id: int, payload: Optional[ReserveRequest] = None):
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                # Atomic conditional UPDATE
+                cur.execute(
+                    """
+                    UPDATE availability
+                    SET available = false
+                    WHERE room_id = %s AND available = true;
+                    """,
+                    (room_id,),
+                )
+                if cur.rowcount == 1:
+                    conn.commit()
+                    booking_id = payload.booking_id if payload else None
+                    return {
+                        "room_id": room_id,
+                        "available": False,
+                        "booking_id": booking_id,
+                        "status": "reserved",
+                    }
+
+                # If rowcount == 0, query database to distinguish 404 (nonexistent) vs 409 (already unavailable)
+                cur.execute(
+                    "SELECT room_id, available FROM availability WHERE room_id = %s;",
+                    (room_id,),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    raise HTTPException(status_code=404, detail="Room not found")
+                else:
+                    raise HTTPException(
+                        status_code=409, detail="Room is not available"
+                    )
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Availability service database error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database unavailable",
+        )
 
 
 if __name__ == "__main__":
     import uvicorn
+
     port = int(os.getenv("PORT", "8005"))
     uvicorn.run("app.main:app", host="0.0.0.0", port=port, reload=True)
