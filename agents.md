@@ -42,6 +42,8 @@ This document outlines the rules and expectations for AI coding agents modifying
 ## 10. Respect Existing Conventions
 - Follow the existing directory structure, naming conventions, and code style.
 - Every service must maintain its own independent Dockerfile, Kubernetes namespace, Deployment, Service, and configuration.
+- Container images must follow Semantic Versioning (`MAJOR.MINOR.PATCH`). Never use the `latest` tag in Kubernetes manifests.
+
 
 ## 11. Ask for Clarification
 - If a user's request conflicts with the PRD, the guardrails, or these agent guidelines, **STOP** and ask for clarification before proceeding.

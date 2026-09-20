@@ -42,3 +42,12 @@ These are the hard engineering constraints for the TravelHub project. They must 
   - `/health` (liveness)
   - `/ready` (readiness)
   - `/metrics` (Prometheus metrics)
+
+## 9. Container Image Versioning (Hard Constraint)
+- All TravelHub service images MUST use Semantic Versioning: `MAJOR.MINOR.PATCH` (e.g., `travelhub/user-service:1.0.0`).
+- The `latest` tag must not be used for Kubernetes deployments.
+- **MAJOR**: Breaking API or service contract changes.
+- **MINOR**: Backward-compatible functionality.
+- **PATCH**: Backward-compatible bug fixes.
+- Every independently deployable service maintains its own version. Service versions do not need to move together (e.g., `user-service:1.1.0`, `hotel-service:1.0.1`, `room-service:2.0.0` is valid).
+
