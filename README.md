@@ -42,14 +42,32 @@ The system is composed of exactly 10 business microservices:
 ```
 
 ## Development Phases
-1. **Phase 1:** Foundation (Documentation, Requirements, Guardrails)
-2. **Phase 2:** Scaffolding (Service skeletons, Dockerfiles, K8s manifests)
-3. **Phase 3:** Core Logic (Synchronous APIs and simple business logic)
-4. **Phase 4:** Frontend (React UI and Gateway integration)
-5. **Phase 5:** Infrastructure & CI/CD (Terraform, Argo CD, Actions)
-6. **Phase 6:** Advanced Systems (Asynchronous messaging, caching)
-7. **Phase 7:** Chaos & Resilience (Failure injection, observability deep-dive)
+1. **Phase 1 (Complete):** Frontend Foundation (React, Vite, shadcn/ui).
+2. **Phase 2:** Scaffolding (Service skeletons, Dockerfiles, K8s manifests).
+3. **Phase 3:** Core Logic (Synchronous APIs and simple business logic).
+4. **Phase 4:** Infrastructure & CI/CD (Terraform, Argo CD, Actions).
+5. **Phase 5:** Advanced Systems (Asynchronous messaging, caching).
+6. **Phase 6:** Chaos & Resilience (Failure injection, observability deep-dive).
 
-## Local Development
-Local development will utilize Docker and local Kubernetes clusters (e.g., minikube or kind) to simulate the distributed environment without relying on unnecessary cloud dependencies. Services can be run independently or orchestrated together using local manifests. 
-*(Detailed local setup instructions to follow in later phases).*
+## Frontend Structure
+The frontend is built with:
+- React + TypeScript
+- Vite
+- shadcn/ui + Tailwind CSS
+
+**Note:** Backend services are **not** implemented yet. The frontend currently uses mocked data and does not make real API calls.
+
+### Available Routes
+- `/` - Home Page
+- `/search` - Search Results
+- `/hotels/:id` - Hotel Details
+- `/bookings` - My Bookings
+- `/assistant` - AI Travel Assistant
+
+### Local Development
+To run the frontend locally:
+```bash
+cd frontend
+npm install
+npm run dev
+```
