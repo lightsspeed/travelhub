@@ -17,8 +17,11 @@ spec:
     spec:
       containers:
       - name: room-service
-        image: travelhub/room-service:1.0.0
+        image: travelhub/room-service:1.0.1
         imagePullPolicy: IfNotPresent
+        env:
+        - name: HOTEL_SERVICE_URL
+          value: "http://hotel-service.travelhub-hotel.svc.cluster.local:8002"
         ports:
         - containerPort: 8003
         livenessProbe:

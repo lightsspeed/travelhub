@@ -2,8 +2,13 @@ import os
 from typing import List
 from fastapi import FastAPI, HTTPException, Response, status
 from pydantic import BaseModel
+import httpx
 
 app = FastAPI(title="TravelHub Room Service")
+
+# Hotel service base URL — overridden via environment variable in Kubernetes.
+# Default points to local development port.
+HOTEL_SERVICE_URL = os.getenv("HOTEL_SERVICE_URL", "http://localhost:8002")
 
 
 class RoomCreate(BaseModel):
@@ -117,6 +122,42 @@ def get_room(room_id: int):
         if room["id"] == room_id:
             return room
     raise HTTPException(status_code=404, detail="Room not found")
+
+
+@app.get("/rooms/{room_id}/hotel")
+def get_room_with_hotel(room_id: int):
+    """Return room details combined with hotel details fetched from hotel-service."""
+    # Step 1: Find the room locally.
+    room = None
+    for r in rooms_db:
+        if r["id"] == room_id:
+            room = r
+            break
+
+    if room is None:
+        raise HTTPException(status_code=404, detail="Room not found")
+
+    # Step 2: Call hotel-service for the hotel details.
+    hotel_url = f"{HOTEL_SERVICE_URL}/hotels/{room['hotel_id']}"
+    try:
+        response = httpx.get(hotel_url, timeout=3.0)
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=503, detail="Hotel service unavailable")
+    except httpx.RequestError:
+        raise HTTPException(status_code=503, detail="Hotel service unavailable")
+
+    # Step 3: Handle upstream response codes.
+    if response.status_code == 404:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Hotel {room['hotel_id']} not found in hotel-service",
+        )
+    if response.status_code != 200:
+        raise HTTPException(status_code=503, detail="Hotel service unavailable")
+
+    hotel = response.json()
+
+    return {"room": room, "hotel": hotel}
 
 
 @app.get("/hotels/{hotel_id}/rooms", response_model=List[Room])
