@@ -1,9 +1,56 @@
+from contextlib import asynccontextmanager
 import os
 from typing import List
 from fastapi import FastAPI, HTTPException, Response, status
 from pydantic import BaseModel
+import psycopg
 
-app = FastAPI(title="TravelHub User Service")
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql://travelhub_user:userpass@localhost:5432/user_db",
+)
+
+
+def get_db_connection():
+    return psycopg.connect(DATABASE_URL, connect_timeout=2)
+
+
+def init_db():
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS users (
+                        id INTEGER PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        email TEXT NOT NULL
+                    );
+                """)
+                cur.execute("SELECT COUNT(*) FROM users;")
+                count = cur.fetchone()[0]
+                if count == 0:
+                    seed_users = [
+                        (1, "Akhil", "akhil@example.com"),
+                        (2, "Priya Sharma", "priya@example.com"),
+                        (3, "John Doe", "john@example.com"),
+                    ]
+                    for u in seed_users:
+                        cur.execute(
+                            "INSERT INTO users (id, name, email) VALUES (%s, %s, %s)",
+                            u,
+                        )
+            conn.commit()
+    except Exception as e:
+        print(f"User service DB init warning: {e}")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
+
+
+app = FastAPI(title="TravelHub User Service", lifespan=lifespan)
 
 
 class UserCreate(BaseModel):
@@ -17,17 +64,6 @@ class User(BaseModel):
     email: str
 
 
-# In-memory user store
-users_db: List[dict] = [
-    {"id": 1, "name": "Akhil", "email": "akhil@example.com"},
-    {"id": 2, "name": "Priya Sharma", "email": "priya@example.com"},
-    {"id": 3, "name": "John Doe", "email": "john@example.com"},
-]
-
-# Track next user ID
-next_user_id = 4
-
-
 @app.get("/health")
 def get_health():
     return {"status": "healthy", "service": "user-service"}
@@ -35,7 +71,17 @@ def get_health():
 
 @app.get("/ready")
 def get_ready():
-    return {"status": "ready", "service": "user-service"}
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1;")
+        return {"status": "ready", "service": "user-service"}
+    except Exception as e:
+        print(f"User service database ready check failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database unavailable",
+        )
 
 
 @app.get("/metrics")
@@ -50,28 +96,62 @@ def get_metrics():
 
 @app.get("/users", response_model=List[User])
 def get_users():
-    return users_db
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, name, email FROM users ORDER BY id;")
+                rows = cur.fetchall()
+                return [{"id": r[0], "name": r[1], "email": r[2]} for r in rows]
+    except Exception as e:
+        print(f"User service database error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database unavailable",
+        )
 
 
 @app.get("/users/{user_id}", response_model=User)
 def get_user(user_id: int):
-    for user in users_db:
-        if user["id"] == user_id:
-            return user
-    raise HTTPException(status_code=404, detail="User not found")
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, name, email FROM users WHERE id = %s;",
+                    (user_id,),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    raise HTTPException(status_code=404, detail="User not found")
+                return {"id": row[0], "name": row[1], "email": row[2]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"User service database error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database unavailable",
+        )
 
 
 @app.post("/users", response_model=User, status_code=status.HTTP_201_CREATED)
 def create_user(payload: UserCreate):
-    global next_user_id
-    new_user = {
-        "id": next_user_id,
-        "name": payload.name,
-        "email": payload.email,
-    }
-    next_user_id += 1
-    users_db.append(new_user)
-    return new_user
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM users;")
+                new_id = cur.fetchone()[0]
+                cur.execute(
+                    "INSERT INTO users (id, name, email) VALUES (%s, %s, %s);",
+                    (new_id, payload.name, payload.email),
+                )
+            conn.commit()
+            return {"id": new_id, "name": payload.name, "email": payload.email}
+    except Exception as e:
+        print(f"User service database error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database unavailable",
+        )
 
 
 if __name__ == "__main__":
