@@ -87,15 +87,39 @@ class _MockCursor:
             }
             self._conn._staged_tasks.append(task)
             self.rowcount = 1
-        elif "UPDATE recovery_tasks SET status" in self._last_query:
-            new_status = args[0]
-            t_id = args[1]
+        elif "UPDATE recovery_tasks" in self._last_query:
             all_t = _mock_recovery_tasks + self._conn._staged_tasks
-            for t in all_t:
-                if t["id"] == t_id:
-                    t["status"] = new_status
-                    self.rowcount = 1
-                    break
+            if "status = 'COMPLETED'" in self._last_query:
+                attempts_delta, t_id = (args[0], args[1]) if len(args) == 2 else (1, args[0])
+                for t in all_t:
+                    if t["id"] == t_id and t["status"] == "PENDING":
+                        t["status"] = "COMPLETED"
+                        t["attempts"] += attempts_delta
+                        self.rowcount = 1
+                        break
+            elif "status = 'FAILED'" in self._last_query:
+                attempts_delta, t_id = (args[0], args[1]) if len(args) == 2 else (1, args[0])
+                for t in all_t:
+                    if t["id"] == t_id and t["status"] == "PENDING":
+                        t["status"] = "FAILED"
+                        t["attempts"] += attempts_delta
+                        self.rowcount = 1
+                        break
+            elif "SET attempts = attempts +" in self._last_query:
+                attempts_delta, t_id = (args[0], args[1]) if len(args) == 2 else (1, args[0])
+                for t in all_t:
+                    if t["id"] == t_id and t["status"] == "PENDING":
+                        t["attempts"] += attempts_delta
+                        self.rowcount = 1
+                        break
+            elif "SET status" in self._last_query:
+                new_status = args[0]
+                t_id = args[1]
+                for t in all_t:
+                    if t["id"] == t_id:
+                        t["status"] = new_status
+                        self.rowcount = 1
+                        break
 
     def fetchone(self):
         if not _db_available:
@@ -145,9 +169,8 @@ class _MockCursor:
                 t = all_t[-1]
                 return (t["id"], t["room_id"], t["action"], t["status"], t["attempts"])
             return None
-        if "UPDATE recovery_tasks SET status =" in q:
-            new_status = self._args[0]
-            t_id = self._args[1]
+        if "UPDATE recovery_tasks" in q:
+            t_id = self._args[1] if len(self._args) == 2 else self._args[0]
             for t in all_t:
                 if t["id"] == t_id:
                     return (t["id"], t["room_id"], t["action"], t["status"], t["attempts"])
@@ -173,7 +196,13 @@ class _MockCursor:
                 )
                 for b in all_b
             ]
-        if "SELECT id, room_id, action, status, attempts FROM recovery_tasks" in q:
+        if "FROM recovery_tasks" in q:
+            if "WHERE status = 'PENDING'" in q:
+                return [
+                    (t["id"], t["room_id"], t["action"], t["status"], t["attempts"])
+                    for t in all_t
+                    if t["status"] == "PENDING"
+                ]
             return [
                 (t["id"], t["room_id"], t["action"], t["status"], t["attempts"])
                 for t in all_t
@@ -930,3 +959,258 @@ def test_fail_outbox_transaction_env_rollback(mock_post):
             os.environ.pop("FAIL_OUTBOX_TRANSACTION", None)
         else:
             os.environ["FAIL_OUTBOX_TRANSACTION"] = original_outbox
+
+
+# -------------------------------------------------------------------
+# Phase 9.5 — Durable Recovery Worker Tests
+# -------------------------------------------------------------------
+
+def test_worker_no_pending_tasks():
+    from app.main import process_recovery_tasks
+
+    before_tasks = [dict(t) for t in _mock_recovery_tasks]
+    process_recovery_tasks()
+    assert len(_mock_recovery_tasks) == len(before_tasks)
+
+
+@patch("httpx.post")
+def test_worker_release_200_completed(mock_post):
+    mock_post.return_value = _release_ok(501)
+    from app.main import process_recovery_tasks
+
+    with _mock_get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO recovery_tasks (room_id, action, status) VALUES (%s, %s, %s) RETURNING id;",
+                (501, "RELEASE_RESERVATION", "PENDING"),
+            )
+            task_id = cur.fetchone()[0]
+        conn.commit()
+
+    process_recovery_tasks()
+
+    task = [t for t in _mock_recovery_tasks if t["id"] == task_id][0]
+    assert task["status"] == "COMPLETED"
+    assert task["attempts"] == 1
+
+
+@patch("httpx.post")
+def test_worker_release_already_available_completed(mock_post):
+    mock_post.return_value = httpx.Response(200, json={"room_id": 502, "available": True, "status": "already_available"})
+    from app.main import process_recovery_tasks
+
+    with _mock_get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO recovery_tasks (room_id, action, status) VALUES (%s, %s, %s) RETURNING id;",
+                (502, "RELEASE_RESERVATION", "PENDING"),
+            )
+            task_id = cur.fetchone()[0]
+        conn.commit()
+
+    process_recovery_tasks()
+
+    task = [t for t in _mock_recovery_tasks if t["id"] == task_id][0]
+    assert task["status"] == "COMPLETED"
+    assert task["attempts"] == 1
+
+
+@patch("httpx.post")
+def test_worker_release_404_failed(mock_post):
+    mock_post.return_value = _release_fail(404)
+    from app.main import process_recovery_tasks
+
+    with _mock_get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO recovery_tasks (room_id, action, status) VALUES (%s, %s, %s) RETURNING id;",
+                (503, "RELEASE_RESERVATION", "PENDING"),
+            )
+            task_id = cur.fetchone()[0]
+        conn.commit()
+
+    process_recovery_tasks()
+
+    task = [t for t in _mock_recovery_tasks if t["id"] == task_id][0]
+    assert task["status"] == "FAILED"
+    assert task["attempts"] == 1
+
+
+@patch("httpx.post")
+def test_worker_release_400_failed(mock_post):
+    mock_post.return_value = _release_fail(400)
+    from app.main import process_recovery_tasks
+
+    with _mock_get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO recovery_tasks (room_id, action, status) VALUES (%s, %s, %s) RETURNING id;",
+                (504, "RELEASE_RESERVATION", "PENDING"),
+            )
+            task_id = cur.fetchone()[0]
+        conn.commit()
+
+    process_recovery_tasks()
+
+    task = [t for t in _mock_recovery_tasks if t["id"] == task_id][0]
+    assert task["status"] == "FAILED"
+    assert task["attempts"] == 1
+
+
+@patch("app.main._COMPENSATION_RETRY_DELAY", 0)
+@patch("httpx.post")
+def test_worker_release_5xx_pending_and_retry_accumulates_attempts(mock_post):
+    mock_post.side_effect = [
+        _release_fail(503),
+        _release_fail(503),
+        _release_fail(503),
+        _release_ok(505),
+    ]
+    from app.main import process_recovery_tasks
+
+    with _mock_get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO recovery_tasks (room_id, action, status) VALUES (%s, %s, %s) RETURNING id;",
+                (505, "RELEASE_RESERVATION", "PENDING"),
+            )
+            task_id = cur.fetchone()[0]
+        conn.commit()
+
+    # Cycle 1: 3 HTTP attempts fail -> status remains PENDING, attempts = 3
+    process_recovery_tasks()
+    task = [t for t in _mock_recovery_tasks if t["id"] == task_id][0]
+    assert task["status"] == "PENDING"
+    assert task["attempts"] == 3
+
+    # Cycle 2: 1 HTTP attempt succeeds -> status becomes COMPLETED, attempts = 4
+    process_recovery_tasks()
+    task = [t for t in _mock_recovery_tasks if t["id"] == task_id][0]
+    assert task["status"] == "COMPLETED"
+    assert task["attempts"] == 4
+
+
+@patch("app.main._COMPENSATION_RETRY_DELAY", 0)
+@patch("httpx.post")
+def test_worker_release_timeout_pending(mock_post):
+    mock_post.side_effect = [
+        httpx.TimeoutException("timeout"),
+        httpx.TimeoutException("timeout"),
+        httpx.TimeoutException("timeout"),
+    ]
+    from app.main import process_recovery_tasks
+
+    with _mock_get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO recovery_tasks (room_id, action, status) VALUES (%s, %s, %s) RETURNING id;",
+                (506, "RELEASE_RESERVATION", "PENDING"),
+            )
+            task_id = cur.fetchone()[0]
+        conn.commit()
+
+    process_recovery_tasks()
+    task = [t for t in _mock_recovery_tasks if t["id"] == task_id][0]
+    assert task["status"] == "PENDING"
+    assert task["attempts"] == 3
+
+
+@patch("app.main._COMPENSATION_RETRY_DELAY", 0)
+@patch("httpx.post")
+def test_worker_one_task_fails_another_succeeds(mock_post):
+    def release_side_effect(url, **kwargs):
+        if "507/release" in url:
+            raise httpx.RequestError("conn error")
+        return _release_ok(508)
+
+    mock_post.side_effect = release_side_effect
+    from app.main import process_recovery_tasks
+
+    with _mock_get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO recovery_tasks (room_id, action, status) VALUES (%s, %s, %s) RETURNING id;",
+                (507, "RELEASE_RESERVATION", "PENDING"),
+            )
+            t1_id = cur.fetchone()[0]
+            cur.execute(
+                "INSERT INTO recovery_tasks (room_id, action, status) VALUES (%s, %s, %s) RETURNING id;",
+                (508, "RELEASE_RESERVATION", "PENDING"),
+            )
+            t2_id = cur.fetchone()[0]
+        conn.commit()
+
+    process_recovery_tasks()
+
+    t1 = [t for t in _mock_recovery_tasks if t["id"] == t1_id][0]
+    t2 = [t for t in _mock_recovery_tasks if t["id"] == t2_id][0]
+    assert t1["status"] == "PENDING"
+    assert t2["status"] == "COMPLETED"
+
+
+@patch("httpx.post")
+def test_worker_discovers_persisted_task_on_restart(mock_post):
+    mock_post.return_value = _release_ok(509)
+    from app.main import process_recovery_tasks
+
+    with _mock_get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO recovery_tasks (room_id, action, status) VALUES (%s, %s, %s) RETURNING id;",
+                (509, "RELEASE_RESERVATION", "PENDING"),
+            )
+            task_id = cur.fetchone()[0]
+        conn.commit()
+
+    init_db()
+
+    process_recovery_tasks()
+    task = [t for t in _mock_recovery_tasks if t["id"] == task_id][0]
+    assert task["status"] == "COMPLETED"
+
+
+@patch("app.main._COMPENSATION_RETRY_DELAY", 0)
+@patch("httpx.post")
+def test_worker_does_not_crash_when_availability_service_unavailable(mock_post):
+    mock_post.side_effect = [
+        Exception("network down"),
+        Exception("network down"),
+        Exception("network down"),
+    ]
+    from app.main import process_recovery_tasks
+
+    with _mock_get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO recovery_tasks (room_id, action, status) VALUES (%s, %s, %s) RETURNING id;",
+                (510, "RELEASE_RESERVATION", "PENDING"),
+            )
+            task_id = cur.fetchone()[0]
+        conn.commit()
+
+    process_recovery_tasks()
+
+    task = [t for t in _mock_recovery_tasks if t["id"] == task_id][0]
+    assert task["status"] == "PENDING"
+    assert task["attempts"] == 3
+
+
+def test_worker_unsupported_recovery_action():
+    from app.main import process_recovery_tasks
+
+    with _mock_get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO recovery_tasks (room_id, action, status) VALUES (%s, %s, %s) RETURNING id;",
+                (511, "UNSUPPORTED_ACTION", "PENDING"),
+            )
+            task_id = cur.fetchone()[0]
+        conn.commit()
+
+    process_recovery_tasks()
+
+    task = [t for t in _mock_recovery_tasks if t["id"] == task_id][0]
+    assert task["status"] == "FAILED"
+    assert task["attempts"] == 1
+
+
