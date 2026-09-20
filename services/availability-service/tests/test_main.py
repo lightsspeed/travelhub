@@ -45,14 +45,26 @@ class _MockCursor:
             self.rowcount = 1
         elif "UPDATE availability" in self._last_query:
             room_id = args[0]
-            for rec in _mock_availability:
-                if rec["room_id"] == room_id:
-                    if rec["available"] is True:
-                        rec["available"] = False
-                        self.rowcount = 1
-                    else:
-                        self.rowcount = 0
-                    break
+            # Release: SET available = true WHERE available = false
+            if "SET available = true" in self._last_query:
+                for rec in _mock_availability:
+                    if rec["room_id"] == room_id:
+                        if rec["available"] is False:
+                            rec["available"] = True
+                            self.rowcount = 1
+                        else:
+                            self.rowcount = 0
+                        break
+            # Reserve: SET available = false WHERE available = true
+            else:
+                for rec in _mock_availability:
+                    if rec["room_id"] == room_id:
+                        if rec["available"] is True:
+                            rec["available"] = False
+                            self.rowcount = 1
+                        else:
+                            self.rowcount = 0
+                        break
 
     def fetchone(self):
         q = self._last_query.strip()
@@ -224,3 +236,139 @@ def test_reserve_consecutive_attempt_returns_409():
     res2 = client.post("/availability/1/reserve", json={"booking_id": 2002})
     assert res2.status_code == 409
     assert res2.json()["detail"] == "Room is not available"
+
+
+# -------------------------------------------------------------------
+# Phase 9 Part 2 — Release endpoint tests
+# -------------------------------------------------------------------
+
+def test_release_unavailable_room_succeeds():
+    """Releasing a currently reserved room returns 200 and marks it available."""
+    # Room 3 is seeded as unavailable in _mock_availability
+    response = client.post("/availability/3/release")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["room_id"] == 3
+    assert data["available"] is True
+    assert data["status"] == "released"
+
+    # Verify persistence via GET
+    get_res = client.get("/availability/3")
+    assert get_res.status_code == 200
+    assert get_res.json()["available"] is True
+
+
+def test_release_nonexistent_room_returns_404():
+    """Releasing a room that does not exist returns 404."""
+    response = client.post("/availability/9999/release")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Room not found"
+
+
+def test_release_already_available_room_is_safe():
+    """Releasing a room that is already available is idempotent — returns 200."""
+    # Room 2 is seeded as available; ensure it is still available
+    get_res = client.get("/availability/2")
+    assert get_res.status_code == 200
+    assert get_res.json()["available"] is True
+
+    response = client.post("/availability/2/release")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["room_id"] == 2
+    assert data["available"] is True
+    assert data["status"] == "already_available"
+
+
+def test_release_persists_in_mock_db():
+    """Reserve a room then release it — state returns to available."""
+    # Room 6 is seeded as unavailable; release it
+    rel = client.post("/availability/6/release")
+    assert rel.status_code == 200
+    assert rel.json()["status"] == "released"
+
+    # Now re-reserve it to confirm it is available again
+    res = client.post("/availability/6/reserve", json={"booking_id": 3001})
+    assert res.status_code == 200
+    assert res.json()["available"] is False
+
+
+# -------------------------------------------------------------------
+# Phase 9 Part 3 — Idempotent release (timeout-safe retry)
+# -------------------------------------------------------------------
+
+def test_release_idempotent_triple_call():
+    """Release the same room three times:
+    - first call:  released
+    - second call: already_available
+    - third call:  already_available
+    State must not be corrupted by repeated release calls.
+    """
+    # First: make room 2 unavailable via reserve
+    # (room 2 was reset to available by earlier tests — reserve it first)
+    reserve_res = client.post("/availability/2/reserve", json={"booking_id": 9001})
+    assert reserve_res.status_code == 200
+    assert reserve_res.json()["available"] is False
+
+    # First release
+    rel1 = client.post("/availability/2/release")
+    assert rel1.status_code == 200
+    assert rel1.json()["status"] == "released"
+    assert rel1.json()["available"] is True
+
+    # Verify state after first release
+    state1 = client.get("/availability/2")
+    assert state1.json()["available"] is True
+
+    # Second release (idempotent — already available)
+    rel2 = client.post("/availability/2/release")
+    assert rel2.status_code == 200
+    assert rel2.json()["status"] == "already_available"
+    assert rel2.json()["available"] is True
+
+    # State unchanged
+    state2 = client.get("/availability/2")
+    assert state2.json()["available"] is True
+
+    # Third release (still idempotent)
+    rel3 = client.post("/availability/2/release")
+    assert rel3.status_code == 200
+    assert rel3.json()["status"] == "already_available"
+    assert rel3.json()["available"] is True
+
+    # Final state: still available — no corruption
+    state3 = client.get("/availability/2")
+    assert state3.json()["available"] is True
+
+
+def test_release_nonexistent_room_always_returns_404():
+    """Releasing a non-existent room always returns 404, never creates state."""
+    for _ in range(3):
+        resp = client.post("/availability/7777/release")
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Room not found"
+
+
+def test_release_after_reserve_cycle():
+    """Full cycle: reserve → release → verify available.
+    Demonstrates the compensation pattern without retry in isolation.
+    """
+    # Ensure room 4 is available (re-reserve then release to guarantee state)
+    # Step 1: reserve
+    res = client.post("/availability/4/reserve", json={"booking_id": 9002})
+    # room 4 may already be unavailable — handle both cases
+    if res.status_code == 409:
+        # Already unavailable — release it
+        pass
+    else:
+        assert res.status_code == 200
+        assert res.json()["available"] is False
+
+    # Step 2: release (compensation)
+    rel = client.post("/availability/4/release")
+    assert rel.status_code == 200
+    assert rel.json()["available"] is True
+
+    # Step 3: verify via GET
+    get_res = client.get("/availability/4")
+    assert get_res.json()["available"] is True

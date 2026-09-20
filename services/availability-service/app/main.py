@@ -211,6 +211,59 @@ def reserve_room(room_id: int, payload: Optional[ReserveRequest] = None):
         )
 
 
+@app.post("/availability/{room_id}/release")
+def release_room(room_id: int):
+    """Release an existing reservation.
+
+    Atomic conditional UPDATE: only flips available = true when the row
+    currently has available = false.  Uses rowcount to distinguish between
+    'just released', 'already available', and 'does not exist'.
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE availability
+                    SET available = true
+                    WHERE room_id = %s
+                      AND available = false;
+                    """,
+                    (room_id,),
+                )
+                if cur.rowcount == 1:
+                    conn.commit()
+                    return {
+                        "room_id": room_id,
+                        "available": True,
+                        "status": "released",
+                    }
+
+                # rowcount == 0 — distinguish 404 vs. already available
+                cur.execute(
+                    "SELECT room_id, available FROM availability WHERE room_id = %s;",
+                    (room_id,),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    raise HTTPException(status_code=404, detail="Room not found")
+
+                # Room exists but is already available — safe / idempotent
+                return {
+                    "room_id": room_id,
+                    "available": True,
+                    "status": "already_available",
+                }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Availability service database error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database unavailable",
+        )
+
+
 if __name__ == "__main__":
     import uvicorn
 
