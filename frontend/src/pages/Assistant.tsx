@@ -76,7 +76,7 @@ export default function Assistant() {
             <Input 
               placeholder="Ask about destinations, hotels, or travel tips..." 
               value={input}
-              onChange={(e: any) => setInput(e.target.value)}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setInput(e.target.value)}
               className="flex-1 bg-white"
             />
             <Button type="submit" disabled={!input.trim()}>

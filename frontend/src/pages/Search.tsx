@@ -112,7 +112,7 @@ export default function Search() {
                     <span className="font-medium">{hotel.rating}</span>
                     <span className="text-slate-500 text-sm">({hotel.reviews} reviews)</span>
                   </div>
-                  <Button onClick={(e: any) => { e.stopPropagation(); navigate(`/hotels/${hotel.id}`); }}>
+                  <Button onClick={(e: React.MouseEvent) => { e.stopPropagation(); navigate(`/hotels/${hotel.id}`); }}>
                     View Details
                   </Button>
                 </div>

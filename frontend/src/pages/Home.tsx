@@ -76,7 +76,7 @@ export default function Home() {
                     placeholder="Where are you going?" 
                     className="pl-9"
                     value={destination}
-                    onChange={(e: any) => setDestination(e.target.value)}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDestination(e.target.value)}
                   />
                 </div>
               </div>

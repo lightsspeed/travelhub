@@ -2,6 +2,18 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Calendar, MapPin, Users } from 'lucide-react';
 
+type BookingType = {
+  id: string;
+  hotelName: string;
+  location: string;
+  dates: string;
+  room: string;
+  guests: number;
+  price: number;
+  status: string;
+  image: string;
+};
+
 const UPCOMING_BOOKINGS = [
   {
     id: 'b1',
@@ -31,7 +43,7 @@ const PAST_BOOKINGS = [
 ];
 
 export default function Bookings() {
-  const renderBooking = (booking: any) => (
+  const renderBooking = (booking: BookingType) => (
     <Card key={booking.id} className="overflow-hidden flex flex-col sm:flex-row mb-4">
       <div className="sm:w-48 h-32 sm:h-auto shrink-0">
         <img src={booking.image} alt={booking.hotelName} className="w-full h-full object-cover" />
