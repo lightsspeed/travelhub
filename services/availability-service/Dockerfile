@@ -15,5 +15,7 @@ USER appuser
 ENV PORT=8005
 EXPOSE 8005
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8005"]
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8005/health')" || exit 1
 
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8005"]
