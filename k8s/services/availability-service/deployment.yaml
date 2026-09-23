@@ -10,7 +10,14 @@ metadata:
     version: "1.0.5"
     managed-by: kubernetes
 spec:
-  replicas: 1
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+  minReadySeconds: 5
+  revisionHistoryLimit: 3
   selector:
     matchLabels:
       app: travelhub
