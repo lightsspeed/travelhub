@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: user-service
+  namespace: travelhub
+  labels:
+    app: travelhub
+    component: backend
+    service: user-service
+    version: "1.0.5"
+    managed-by: kubernetes
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: travelhub
+      service: user-service
+  template:
+    metadata:
+      labels:
+        app: travelhub
+        component: backend
+        service: user-service
+        version: "1.0.5"
+        managed-by: kubernetes
+    spec:
+      containers:
+      - name: user-service
+        image: travelhub/user-service:1.0.5
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8001
+        env:
+        - name: PORT
+          value: "8001"

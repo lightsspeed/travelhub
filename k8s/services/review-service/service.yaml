@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: review-service
+  namespace: travelhub
+  labels:
+    app: travelhub
+    component: backend
+    service: review-service
+    version: "1.0.5"
+    managed-by: kubernetes
+spec:
+  type: ClusterIP
+  selector:
+    app: travelhub
+    service: review-service
+  ports:
+  - port: 8008
+    targetPort: 8008
+    protocol: TCP

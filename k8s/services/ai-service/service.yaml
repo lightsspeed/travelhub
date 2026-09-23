@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-service
+  namespace: travelhub
+  labels:
+    app: travelhub
+    component: backend
+    service: ai-service
+    version: "1.0.5"
+    managed-by: kubernetes
+spec:
+  type: ClusterIP
+  selector:
+    app: travelhub
+    service: ai-service
+  ports:
+  - port: 8010
+    targetPort: 8010
+    protocol: TCP

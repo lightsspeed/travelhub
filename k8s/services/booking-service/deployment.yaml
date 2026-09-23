@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: booking-service
+  namespace: travelhub
+  labels:
+    app: travelhub
+    component: backend
+    service: booking-service
+    version: "1.0.5"
+    managed-by: kubernetes
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: travelhub
+      service: booking-service
+  template:
+    metadata:
+      labels:
+        app: travelhub
+        component: backend
+        service: booking-service
+        version: "1.0.5"
+        managed-by: kubernetes
+    spec:
+      containers:
+      - name: booking-service
+        image: travelhub/booking-service:1.0.5
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8006
+        env:
+        - name: PORT
+          value: "8006"
+        - name: AVAILABILITY_SERVICE_URL
+          value: "http://availability-service.travelhub.svc.cluster.local:8005"

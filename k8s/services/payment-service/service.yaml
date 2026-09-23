@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-service
+  namespace: travelhub
+  labels:
+    app: travelhub
+    component: backend
+    service: payment-service
+    version: "1.0.5"
+    managed-by: kubernetes
+spec:
+  type: ClusterIP
+  selector:
+    app: travelhub
+    service: payment-service
+  ports:
+  - port: 8007
+    targetPort: 8007
+    protocol: TCP

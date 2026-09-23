@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: room-service
+  namespace: travelhub
+  labels:
+    app: travelhub
+    component: backend
+    service: room-service
+    version: "1.0.5"
+    managed-by: kubernetes
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: travelhub
+      service: room-service
+  template:
+    metadata:
+      labels:
+        app: travelhub
+        component: backend
+        service: room-service
+        version: "1.0.5"
+        managed-by: kubernetes
+    spec:
+      containers:
+      - name: room-service
+        image: travelhub/room-service:1.0.5
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8003
+        env:
+        - name: PORT
+          value: "8003"
+        - name: HOTEL_SERVICE_URL
+          value: "http://hotel-service.travelhub.svc.cluster.local:8002"

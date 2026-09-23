@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-service
+  namespace: travelhub
+  labels:
+    app: travelhub
+    component: backend
+    service: ai-service
+    version: "1.0.5"
+    managed-by: kubernetes
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: travelhub
+      service: ai-service
+  template:
+    metadata:
+      labels:
+        app: travelhub
+        component: backend
+        service: ai-service
+        version: "1.0.5"
+        managed-by: kubernetes
+    spec:
+      containers:
+      - name: ai-service
+        image: travelhub/ai-service:1.0.5
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8010
+        env:
+        - name: PORT
+          value: "8010"

@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: notification-service
+  namespace: travelhub
+  labels:
+    app: travelhub
+    component: backend
+    service: notification-service
+    version: "1.0.5"
+    managed-by: kubernetes
+spec:
+  type: ClusterIP
+  selector:
+    app: travelhub
+    service: notification-service
+  ports:
+  - port: 8009
+    targetPort: 8009
+    protocol: TCP
