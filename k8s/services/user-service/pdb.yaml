@@ -1,0 +1,11 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: user-service-pdb
+  namespace: travelhub
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: travelhub
+      service: user-service
