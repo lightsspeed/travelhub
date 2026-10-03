@@ -48,6 +48,16 @@ spec:
         - name: PORT
           value: "8004"
 
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 999
+          runAsGroup: 999
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+
         livenessProbe:
           httpGet:
             path: /health
@@ -73,3 +83,9 @@ spec:
           periodSeconds: 5
           timeoutSeconds: 3
           failureThreshold: 12
+      volumes:
+      - name: tmp
+        emptyDir:
+          medium: Memory
+          sizeLimit: 64Mi
+
